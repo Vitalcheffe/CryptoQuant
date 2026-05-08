@@ -107,19 +107,31 @@ function formatPrediction(pred: Prediction): string {
 // ============================================================================
 // QUICK ANALYSIS (single symbol)
 // ============================================================================
+async function safeFetchJSON(url: string): Promise<any> {
+  try {
+    const resp = await fetch(url, {
+      headers: { 'User-Agent': 'CryptoQuantBot/2.0', 'Accept': 'application/json' },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!resp.ok) return null;
+    const text = await resp.text();
+    if (!text || text.startsWith('<')) return null;
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
 async function quickAnalyze(symbol: string): Promise<PrePumpScore | null> {
   try {
     if (!symbol.endsWith('USDT')) symbol = symbol + 'USDT';
-    const [resp1d, resp4h] = await Promise.all([
-      fetch(`${BINANCE_BASE}/api/v3/klines?symbol=${symbol}&interval=1d&limit=60`),
-      fetch(`${BINANCE_BASE}/api/v3/klines?symbol=${symbol}&interval=4h&limit=60`)
+    const [raw1d, raw4h] = await Promise.all([
+      safeFetchJSON(`${BINANCE_BASE}/api/v3/klines?symbol=${symbol}&interval=1d&limit=60`),
+      safeFetchJSON(`${BINANCE_BASE}/api/v3/klines?symbol=${symbol}&interval=4h&limit=60`)
     ]);
 
-    if (!resp1d.ok || !resp4h.ok) return null;
-
-    const raw1d = await resp1d.json() as any[];
-    const raw4h = await resp4h.json() as any[];
-
+    if (!raw1d || !raw4h) return null;
+    if (!Array.isArray(raw1d) || !Array.isArray(raw4h)) return null;
     if (raw1d.length < 25 || raw4h.length < 25) return null;
 
     const klines1d: Kline[] = raw1d.map((k: any[]) => ({
@@ -144,9 +156,8 @@ async function quickAnalyze(symbol: string): Promise<PrePumpScore | null> {
 async function fetchCurrentPrice(symbol: string): Promise<number | null> {
   try {
     if (!symbol.endsWith('USDT')) symbol = symbol + 'USDT';
-    const resp = await fetch(`${BINANCE_BASE}/api/v3/ticker/price?symbol=${symbol}`);
-    if (!resp.ok) return null;
-    const data = await resp.json() as any;
+    const data = await safeFetchJSON(`${BINANCE_BASE}/api/v3/ticker/price?symbol=${symbol}`);
+    if (!data || !data.price) return null;
     return parseFloat(data.price);
   } catch {
     return null;

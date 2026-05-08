@@ -402,49 +402,100 @@ export interface ScanResult {
   totalScanned: number;
 }
 
+// Fallback list of Binance USDT pairs (in case exchangeInfo fetch fails)
+const FALLBACK_PAIRS: string[] = [
+  'ONGUSDT','ONTUSDT','CITYUSDT','BARUSDT','ENJUSDT','MBLUSDT','SCUSDT',
+  'ATOMUSDT','TFUELUSDT','DGBUSDT','DCRUSDT','PONDUSDT','PORTOUSDT',
+  'COMPUSDT','BCHUSDT','ALICEUSDT','GTCUSDT','SFPUSDT','REQUSDT',
+  'ZILUSDT','ANKRUSDT','COWUSDT','SXTUSDT','KATUSDT','HOMEUSDT',
+  'TRUMPUSDT','HMSTRUSDT','NFPUSDT','LAUSDT','FFUSDT','ALLOUSDT',
+  'NIGHTUSDT','LUMIAUSDT','NOMUSDT','BARDUSDT','ACXUSDT','VTHOUSDT',
+  'NEXOUSDT','SYSUSDT','DENTUSDT','CHZUSDT','ONEUSDT','HOTUSDT',
+  'ZENUSDT','CELOUSDT','RVNUSDT','IOSTUSDT','NEOUSDT','WAVESUSDT',
+  'DASHUSDT','ZECUSDT','XTZUSDT','IOTAUSDT','SANDUSDT','MANAUSDT',
+  'AXSUSDT','GALAUSDT','IMXUSDT','APEUSDT','LRCUSDT','OGUSDT',
+  'JASMYUSDT','PEOPLEUSDT','SPELLUSDT','JOEUSDT','SSVUSDT','MAGICUSDT',
+  'TUSDT','LEVERUSDT','HOOKUSDT','TRUUSDT','LQTYUSDT','IDUSDT',
+  'JUPUSDT','WUSDT','PENDLEUSDT','STXUSDT','RDNTUSDT','WOOUSDT',
+  'AMBUSDUSDT','XAIUSDT','AAVEUSDT','MKRUSDT','SNXUSDT','COMPUSDT',
+  'LDOUSDT','RPLASDT','FXSUSDT','TUSDT','ARBUSDT','OPUSDT',
+  'SUIUSDT','SEIUSDT','TIAUSDT','JTOUSDT','PIXELUSDT','STRKUSDT',
+  'ACEUSDT','XAIUSDT','AIUSDT','NFPUSDT','VANRYUSDT','GALUSDT',
+  'HIGHUSDT','MINAUSDT','CKBUSDT','ORDIUSDT','COMBOUSDT',
+  'TONUSDT','NOTUSDT','DOGSUSDT','LUNCUSDT','VVVUSDT',
+];
+
+async function safeFetchJSON(url: string): Promise<any> {
+  try {
+    const resp = await fetch(url, {
+      headers: { 'User-Agent': 'CryptoQuantBot/2.0', 'Accept': 'application/json' },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!resp.ok) return null;
+    const text = await resp.text();
+    if (!text || text.startsWith('<')) return null; // HTML error page
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
 export async function scanFullMarket(): Promise<ScanResult> {
   const BINANCE_BASE = 'https://api.binance.com';
 
-  // Get all USDT pairs
-  const exchangeResp = await fetch(`${BINANCE_BASE}/api/v3/exchangeInfo`);
-  const exchangeData = await exchangeResp.json() as any;
-  const usdtPairs = exchangeData.symbols
-    .filter((s: any) => s.quoteAsset === 'USDT' && s.status === 'TRADING')
-    .map((s: any) => s.symbol);
+  // Try to get all USDT pairs from Binance, fallback to hardcoded list
+  let usdtPairs: string[] = FALLBACK_PAIRS;
+  try {
+    const exchangeData = await safeFetchJSON(`${BINANCE_BASE}/api/v3/exchangeInfo`);
+    if (exchangeData && Array.isArray(exchangeData.symbols)) {
+      const fetched = exchangeData.symbols
+        .filter((s: any) => s && s.quoteAsset === 'USDT' && s.status === 'TRADING')
+        .map((s: any) => s.symbol);
+      if (fetched.length > 50) {
+        usdtPairs = fetched;
+        console.log(`✅ Fetched ${fetched.length} USDT pairs from Binance`);
+      } else {
+        console.log(`⚠️ Binance returned only ${fetched.length} pairs, using fallback`);
+      }
+    } else {
+      console.log('⚠️ Binance exchangeInfo failed, using fallback list of', FALLBACK_PAIRS.length, 'pairs');
+    }
+  } catch (e) {
+    console.log('⚠️ Binance exchangeInfo error, using fallback:', (e as Error).message);
+  }
 
   // Get Fear & Greed
   let fngValue = 50;
   let fngLabel = 'Neutral';
   try {
-    const fngResp = await fetch('https://api.alternative.me/fng/?limit=1');
-    const fngData = await fngResp.json() as any;
-    fngValue = parseInt(fngData.data[0].value);
-    fngLabel = fngData.data[0].value_classification;
+    const fngData = await safeFetchJSON('https://api.alternative.me/fng/?limit=1');
+    if (fngData && fngData.data && fngData.data[0]) {
+      fngValue = parseInt(fngData.data[0].value);
+      fngLabel = fngData.data[0].value_classification;
+    }
   } catch { }
 
   const skip = new Set(['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'USDCUSDT', 'TUSDUSDT', 'BUSDUSDT', 'DAIUSDT', 'FDUSDUSDT', 'USDPUSDT']);
 
   const candidates: PrePumpScore[] = [];
   let totalScanned = 0;
+  let errors = 0;
 
-  // Process in batches to avoid rate limits
-  const batchSize = 5;
+  // Process in small batches to avoid rate limits (Binance = 1200 req/min)
+  const batchSize = 3;
   for (let i = 0; i < usdtPairs.length; i += batchSize) {
     const batch = usdtPairs.slice(i, i + batchSize).filter(p => !skip.has(p));
 
     const results = await Promise.allSettled(
       batch.map(async (symbol) => {
         try {
-          const [resp1d, resp4h] = await Promise.all([
-            fetch(`${BINANCE_BASE}/api/v3/klines?symbol=${symbol}&interval=1d&limit=60`),
-            fetch(`${BINANCE_BASE}/api/v3/klines?symbol=${symbol}&interval=4h&limit=60`)
+          const [raw1d, raw4h] = await Promise.all([
+            safeFetchJSON(`${BINANCE_BASE}/api/v3/klines?symbol=${symbol}&interval=1d&limit=60`),
+            safeFetchJSON(`${BINANCE_BASE}/api/v3/klines?symbol=${symbol}&interval=4h&limit=60`)
           ]);
 
-          if (!resp1d.ok || !resp4h.ok) return null;
-
-          const raw1d = await resp1d.json() as any[];
-          const raw4h = await resp4h.json() as any[];
-
+          if (!raw1d || !raw4h) return null;
+          if (!Array.isArray(raw1d) || !Array.isArray(raw4h)) return null;
           if (raw1d.length < 25 || raw4h.length < 25) return null;
 
           const klines1d: Kline[] = raw1d.map((k: any[]) => ({
@@ -462,6 +513,7 @@ export async function scanFullMarket(): Promise<ScanResult> {
           const analysis = analyzePrePumpSetup(symbol, klines1d, klines4h);
           return analysis.totalScore >= 40 ? analysis : null;
         } catch {
+          errors++;
           return null;
         }
       })
@@ -474,14 +526,16 @@ export async function scanFullMarket(): Promise<ScanResult> {
     }
     totalScanned += batch.length;
 
-    // Small delay to respect rate limits
-    if (i % 50 === 0 && i > 0) {
-      await new Promise(r => setTimeout(r, 1000));
+    // Delay every 15 pairs to respect Binance rate limits
+    if (i % 15 === 0 && i > 0) {
+      await new Promise(r => setTimeout(r, 500));
     }
   }
 
   // Sort by score
   candidates.sort((a, b) => b.totalScore - a.totalScore);
+
+  console.log(`📊 Scan complete: ${totalScanned} scanned, ${errors} errors, ${candidates.length} candidates found`);
 
   return {
     timestamp: Date.now(),
