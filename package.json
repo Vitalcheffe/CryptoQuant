@@ -1,17 +1,14 @@
 {
-  "name": "crypto-quant-bot",
-  "version": "2.0.0",
-  "description": "Crypto Pre-Pump Detection Engine - Quality over Quantity",
-  "main": "src/bot.ts",
+  "name": "crypto-quant-brain",
+  "version": "3.0.0",
+  "description": "Quantitative Brain - JP Morgan grade crypto intelligence, 24/7 autonomous",
+  "main": "src/brain.ts",
   "scripts": {
-    "start": "bun run src/bot.ts",
-    "dev": "bun --watch src/bot.ts"
+    "start": "bun run src/brain.ts",
+    "dev": "bun --watch src/brain.ts"
   },
-  "dependencies": {
-    "node-telegram-bot-api": "^0.66.0",
-    "typescript": "^5.4.0"
-  },
+  "dependencies": {},
   "devDependencies": {
-    "@types/node-telegram-bot-api": "^0.64.0"
+    "typescript": "^5.4.0"
   }
 }
